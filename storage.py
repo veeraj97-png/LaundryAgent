@@ -8,7 +8,7 @@ from scheduling import business_today, validate_pickup_date
 
 
 DATABASE_PATH = Path(__file__).parent / "laundry.db"
-DAILY_CAPACITY = {"morning": 2, "afternoon": 0, "evening": 3}
+DAILY_CAPACITY = {"morning": 2, "afternoon": 2, "evening": 3}
 
 
 def initialize_database():
@@ -86,7 +86,7 @@ def initialize_database():
         # 3. Add initial slots only if they do not already exist.
         initial_slots = [
             ("morning", "9 AM–12 PM", 2),
-            ("afternoon", "12 PM–4 PM", 0),
+            ("afternoon", "12 PM–4 PM", DAILY_CAPACITY["afternoon"]),
             ("evening", "4 PM–8 PM", 3),
         ]
 

@@ -91,13 +91,16 @@ restricts quantity to 1–1,000. Five wash-and-iron garments cost Rs 250.
 | Pickup code | Display window (India time) | Initial capacity per date |
 |---|---|---:|
 | `morning` | 9 AM–12 PM | 2 |
-| `afternoon` | 12 PM–4 PM | 0 |
+| `afternoon` | 12 PM–4 PM | 2 |
 | `evening` | 4 PM–8 PM | 3 |
 
 **One new booking consumes one pickup-capacity unit**, regardless of garment
 quantity. Rejection and proposal preparation consume none. Identical successful
 request retries return the original booking and consume none again. Changing
 commercial details requires a new proposal and fresh approval.
+
+These defaults apply to date/window pairs without a stored capacity row.
+Existing date-specific capacities are preserved, including full slots.
 
 New pickups require a calendar date on or after today in India time. Capacity
 is tracked independently for each date/window. A confirmed pickup date does not

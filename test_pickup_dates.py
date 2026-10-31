@@ -60,6 +60,26 @@ class PickupDateTests(unittest.TestCase):
         self.assertEqual(storage.get_booking(booking["booking_id"])["pickup_date"], self.day)
         self.assertEqual(database_rows(self.business)["pickup_slots"], before["pickup_slots"])
 
+    def test_afternoon_default_books_without_resetting_existing_capacities(self):
+        legacy_afternoon = next(slot for slot in storage.read_pickup_slots()
+                                if slot["slot_code"] == "afternoon")
+        self.assertEqual(legacy_afternoon["remaining_capacity"], 2)
+        with sqlite3.connect(self.business) as connection:
+            connection.execute("INSERT INTO dated_pickup_slots VALUES (?, 'afternoon', 0)", (self.other,))
+        before = database_rows(self.business)
+        self.assertEqual(shop.check_pickup_slot("afternoon", self.day)["remaining_capacity"], 2)
+        self.assertEqual(database_rows(self.business), before)
+        proposal = shop.prepare_booking_proposal("wash_and_iron", 5, "afternoon", self.day)
+        self.approve(proposal)
+        booking = shop.create_booking(proposal)
+        after = database_rows(self.business)
+        storage.initialize_database()
+        self.assertEqual(database_rows(self.business), after)
+        self.assertEqual(shop.check_pickup_slot("afternoon", self.day)["remaining_capacity"], 1)
+        self.assertEqual(shop.check_pickup_slot("afternoon", self.other)["remaining_capacity"], 0)
+        self.assertEqual(storage.get_booking(booking["booking_id"])["slot_code"], "afternoon")
+        self.assertEqual(after["pickup_slots"], before["pickup_slots"])
+
     def test_date_change_requires_new_snapshot_and_fresh_approval(self):
         p = self.prepare(); self.approve(p)
         altered = deepcopy(p); altered["pickup"]["pickup_date"] = self.other

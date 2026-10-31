@@ -1,5 +1,18 @@
 # Evaluation: current reusable tests and observed demonstrations
 
+## Afternoon capacity correction
+
+Normal afternoon capacity is now 2 for new date/window pairs and newly seeded
+legacy slot rows. Initialization preserves existing rows, including full slots.
+The old zero-afternoon scenario is explicitly retained only as a temporary
+regression fixture; historical evaluation results below describe earlier defaults.
+
+The full isolated offline suite passed **126 tests** after this correction.
+The added case verifies an afternoon booking consumes capacity 2 → 1, another
+stored full date stays at 0, and repeat initialization changes no business rows.
+SHA-256 comparisons confirmed existing business and checkpoint databases were
+unchanged. No live API calls were made for this correction.
+
 ## Pickup date extension
 
 The dated-pickup implementation passed the full reusable offline suite in an

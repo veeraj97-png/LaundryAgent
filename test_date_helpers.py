@@ -7,6 +7,11 @@ TEST_DATE = (business_today() + timedelta(days=2)).isoformat()
 
 
 def seed_date(path, pickup_date=TEST_DATE):
+    """Seed the historical regression scenario: afternoon deliberately full.
+
+    Callers supply their temporary test database, not the demo database.
+    This fixture is independent of the application's normal capacity defaults.
+    """
     with sqlite3.connect(path) as connection:
         connection.executemany(
             "INSERT OR IGNORE INTO dated_pickup_slots VALUES (?, ?, ?)",

@@ -30,8 +30,9 @@ also displays the recorded pickup date.
   old orders remain NULL and display “Not recorded (legacy booking)”.
 - `dated_pickup_slots` has primary key `(pickup_date, slot_code)` and nonnegative
   remaining capacity. Booking on one date does not consume capacity on another.
-- Each untouched date starts with morning 2, afternoon 0 and evening 3, using
-  the existing fictional capacity policy. Reads calculate unmaterialized defaults
+- Each untouched date starts with morning 2, afternoon 2 and evening 3, using
+  fictional demo capacities. Existing date/window capacity rows are preserved,
+  including full slots. Reads calculate unmaterialized defaults
   without writing rows. Booking inserts/updates the selected row transactionally.
 - The old `pickup_slots` rows remain intact as legacy data and window names.
   Their historical undated consumption is not assigned to any invented date.
