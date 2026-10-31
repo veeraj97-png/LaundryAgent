@@ -12,6 +12,7 @@ import laundry_agent as agent
 from nebius_check import ConfigurationError, load_config, safe_text
 import shop
 import storage
+from scheduling import business_today, validate_pickup_date
 from streamlit_backend import decide, open_demo
 
 
@@ -35,7 +36,8 @@ def submit_order(intent):
         text = f"What would {service} cost for {quantity} garments?"
     else:
         slot = st.session_state["order_slot"]
-        text = f"Prepare a proposal for {service}, {quantity} garments, {slot} pickup."
+        chosen = st.session_state["order_date"].isoformat()
+        text = f"Prepare a proposal for {service}, {quantity} garments, {slot} pickup on {chosen}."
     queue_action("chat", text)
 
 
@@ -45,9 +47,10 @@ def render_terms(proposal, clean):
     st.markdown(f"### {clean(quote['service_name'])}")
     st.write(f"{quote['quantity']} garments × Rs {quote['unit_price']} each")
     st.metric("Total", f"Rs {quote['total_price']}")
+    st.markdown(f"**Pickup date:** {clean(pickup.get('pickup_date') or 'Not recorded (legacy proposal)')}")
     st.markdown(f"**Pickup window**  \n{clean(pickup['display_name'])} · {clean(pickup['slot_code'].title())}")
     st.write(f"Estimated turnaround: {quote['turnaround_days']} days")
-    st.caption("Undated pickup. Turnaround is an estimate, not a delivery-date guarantee.")
+    st.caption("Dates use India time. Turnaround is an estimate, not a delivery-date guarantee.")
 
 
 def confirmed_receipt(content):
@@ -66,6 +69,7 @@ def confirmed_receipt(content):
                 or any(order[key] != expected for key, expected in {
                     "service_code": quote["service_code"], "quantity": quote["quantity"],
                     "total_price": quote["total_price"], "slot_code": booking["pickup"]["slot_code"],
+                    "pickup_date": booking["pickup"].get("pickup_date"),
                     "status": "confirmed"}.items())):
             return None
         return booking
@@ -89,9 +93,10 @@ def render_message(message, clean, index):
                 quote, pickup = booking["quote"], booking["pickup"]
                 st.markdown(f"### {clean(quote['service_name'])} · Rs {quote['total_price']}")
                 st.write(f"{quote['quantity']} garments × Rs {quote['unit_price']} each")
+                st.markdown(f"**Pickup date:** {clean(pickup.get('pickup_date') or 'Not recorded (legacy booking)')}")
                 st.markdown(f"**Pickup:** {clean(pickup['slot_code'].title())} · {clean(pickup['display_name'])}")
                 st.write(f"Estimated turnaround: {quote['turnaround_days']} days")
-                st.caption("Undated pickup window · turnaround is an estimate.")
+                st.caption("Turnaround is an estimate, not a promised delivery date.")
                 st.markdown("**Booking reference**")
                 st.markdown(clean(booking["booking_id"]))
                 st.caption("Saved in this local demo. Refreshing won't book again.")
@@ -123,7 +128,7 @@ def render_services(slots, busy):
         icon = "✧" if code == "wash_and_fold" else "♧"
         st.markdown(f'<div class="service-card"><span class="service-icon">{icon}</span><div><strong>{escape(details["display_name"])}</strong><small>Estimated {details["turnaround_days"]}-day turnaround</small></div><div class="service-price">Rs {details["price_per_item"]}<small>per garment</small></div></div>', unsafe_allow_html=True)
     st.markdown("#### Pickup windows")
-    st.caption("Current capacity · no dates assigned")
+    st.caption("Current capacity for the selected pickup date")
     for slot in slots:
         capacity = slot["remaining_capacity"]
         status = f"{capacity} remaining" if capacity else "Full"
@@ -135,9 +140,7 @@ def render_services(slots, busy):
 def render_order_form(slots, disabled):
     available = [slot["slot_code"] for slot in slots if slot["remaining_capacity"] > 0]
     windows = {slot["slot_code"]: slot["display_name"] for slot in slots}
-    with st.form("order_builder", enter_to_submit=False):
-        st.markdown("### Start with your laundry")
-        st.caption("Choose your details. We'll show you a proposal before anything is booked.")
+    with st.form("order_builder", enter_to_submit=False, border=False):
         st.selectbox("Service", list(shop.services), format_func=lambda code: shop.services[code]["display_name"], key="order_service", disabled=disabled)
         st.number_input("Number of garments", min_value=1, max_value=1000, value=5, step=1, key="order_quantity", disabled=disabled)
         st.selectbox("Pickup window", available, format_func=lambda code: f"{code.title()} · {windows[code]}", key="order_slot", disabled=disabled or not available, placeholder="No pickup windows available" if not available else "Choose a window")
@@ -161,7 +164,7 @@ def render_activity(messages, clean):
                 arguments = result.get("arguments", {})
                 # Only validated commercial inputs; never raw model arguments.
                 safe_arguments = {k: v for k, v in arguments.items()
-                                  if k in ("service_code", "quantity", "slot_code")} if isinstance(arguments, dict) else {}
+                                  if k in ("service_code", "quantity", "slot_code", "pickup_date")} if isinstance(arguments, dict) else {}
                 st.json({"tool": name if name in agent.TOOL_NAMES else "unsupported",
                          "arguments": json.loads(clean(json.dumps(safe_arguments))),
                          "outcome": clean(str(result.get("outcome", "error"))),
@@ -223,7 +226,6 @@ def render_app(graph, config, config_problem):
     except agent.UnfinishedTurnError:
         unfinished = True
     needs_recovery = unfinished or bool(snapshot.values.get("booking_error"))
-    slots = sorted(storage.read_pickup_slots(), key=lambda slot: {"morning": 0, "afternoon": 1, "evening": 2}.get(slot["slot_code"], 3))
     if needs_recovery:
         st.warning("This turn is incomplete or its booking outcome needs checking. It is not a confirmed answer. Recovery runs only when you click below.")
         st.button("Recover saved outcome", key="recover", on_click=queue_action, args=("recover",), disabled=busy)
@@ -241,7 +243,7 @@ def render_app(graph, config, config_problem):
                     st.markdown("**Hi there. A fresh start begins here.**")
                     st.write("I can help you find a price, check pickup windows and put together your laundry request. You'll always review the details before booking.")
                 st.button("Price wash & iron for 5 garments", key="quick_quote", on_click=queue_action, args=("chat", "What would it cost to wash and iron five garments?"), disabled=disabled, width="stretch")
-                st.button("Show available pickup windows", key="quick_slots", on_click=queue_action, args=("chat", "Which pickup windows are currently available?"), disabled=disabled, width="stretch")
+                st.button("Show available pickup windows", key="quick_slots", on_click=queue_action, args=("chat", "Help me choose a pickup date and check available pickup windows."), disabled=disabled, width="stretch")
             for index, message in enumerate(messages):
                 render_message(message, clean, index)
             if pending:
@@ -264,13 +266,39 @@ def render_app(graph, config, config_problem):
                     terms = {key: pending[key] for key in ("request_id", "snapshot_id", "quote", "pickup")}
                     st.json(json.loads(clean(json.dumps(terms))))
                 binding = (pending["request_id"], pending["snapshot_id"])
-                st.button("Approve", key=f"approve:{thread}:{binding[0]}:{binding[1]}", on_click=queue_action, args=("approve", *binding), disabled=busy, type="primary", width="stretch")
+                legacy = not pending["pickup"].get("pickup_date")
+                if legacy:
+                    st.warning("This older proposal has no date. Reject it and request a new dated proposal.")
+                date_invalid = legacy
+                if not legacy:
+                    try:
+                        validate_pickup_date(pending["pickup"]["pickup_date"])
+                    except ValueError:
+                        date_invalid = True
+                        st.warning("This pickup date has passed. Reject this proposal and choose a new date.")
+                st.button("Approve", key=f"approve:{thread}:{binding[0]}:{binding[1]}", on_click=queue_action, args=("approve", *binding), disabled=busy or date_invalid, type="primary", width="stretch")
                 st.button("Reject", key=f"reject:{thread}:{binding[0]}:{binding[1]}", on_click=queue_action, args=("reject", *binding), disabled=busy, width="stretch")
         else:
-            render_order_form(slots, disabled)
+            with st.container(border=True, key="laundry_builder"):
+                st.markdown("### Start with your laundry")
+                st.caption("Choose your details. We'll show you a proposal before anything is booked.")
+                if st.session_state.get("order_date") is not None and st.session_state["order_date"] < business_today():
+                    st.session_state["order_date"] = business_today()
+                chosen = st.date_input("Pickup date", value=business_today(), min_value=business_today(),
+                                       format="DD/MM/YYYY", key="order_date", disabled=disabled,
+                                       persist_state="session",
+                                       help="India time (IST). Availability is separate for each date.")
+                slots = sorted(storage.read_pickup_slots(chosen.isoformat()), key=lambda slot: {"morning": 0, "afternoon": 1, "evening": 2}.get(slot["slot_code"], 3)) if chosen else []
+                render_order_form(slots, disabled)
         with st.expander("Services & current pickup availability", expanded=not messages and not pending):
-            render_services(slots, busy)
-    st.caption("Local demo · fictional prices and synthetic data. Pickup windows have no dates; no payment is collected.")
+            selected_date = pending["pickup"].get("pickup_date") if pending else chosen.isoformat() if chosen else None
+            if selected_date:
+                st.caption("Pickup date: " + selected_date + " · IST")
+                try:
+                    render_services(storage.read_pickup_slots(selected_date), busy)
+                except ValueError:
+                    st.info("Choose a current or future date for fresh availability.")
+    st.caption("Local demo · synthetic data. Pickup date and window are required; no payment is collected.")
 
 
 def main():

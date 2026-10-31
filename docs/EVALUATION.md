@@ -1,5 +1,57 @@
 # Evaluation: current reusable tests and observed demonstrations
 
+## Pickup date extension
+
+The dated-pickup implementation passed the full reusable offline suite in an
+isolated project copy: **125 cases passed, 0 failures, 0 errors, 0 skips**.
+The new total includes 10 date-specific cases and 21 UI cases (three additional
+calendar tests), with the earlier regression scenarios adapted to explicit dates.
+It replaces the earlier 112-case snapshot as the current total; runs are not added.
+
+Date tests verify strict/non-past dates, read-only date-specific availability,
+independent capacity on different days, date changes requiring fresh approval,
+rollback of newly materialized capacity rows, saved retries after a date passes,
+expiry of unbooked approvals, clarification when date is missing, restart and
+duplicate resume, additive legacy migration, and refusal of new undated bookings.
+Calendar tests verify date-only reruns make no model calls, the chosen date reaches
+review/order/receipt, and clearing the calendar prevents an undated proposal.
+
+An offline Safari fixture approved five wash-and-iron garments for 2026-11-02,
+morning. The saved order included that date and the dated row's capacity became
+1 from the initial 2. No other date was consumed. Tests and that visual fixture
+used temporary databases, with no live Nebius calls. Before activating the local
+app's additive migration, hash/mtime checks confirmed existing databases were
+untouched. See [PICKUP_DATES.md](PICKUP_DATES.md) for current policies and limits.
+
+## Live pickup-date verification — 2026-10-31
+
+The configured Nebius model `Qwen/Qwen3-30B-A3B-Instruct-2507` passed a real API verification using
+**six model calls**, a ten-call hard cap, 20-second request timeouts, and no
+SDK retries. A sandbox-blocked connection attempt preceded the successful run;
+it produced a connection failure and was not counted as a successful API call.
+No fake model responses were used in this live check.
+
+| Check | Observed evidence | Result |
+| --- | --- | --- |
+| Quote | Actual `calculate_quote` call: five wash-and-iron garments, Rs 250; orders 0 → 0 | PASS |
+| Missing date | Model asked for a YYYY-MM-DD date; no proposal/order/capacity change | PASS |
+| Dated proposal | Actual `prepare_booking_proposal` call for morning, 2026-11-02; price Rs 250; awaiting approval, orders 0, capacity 2 | PASS |
+| Checkpoint reopen and trusted approval | Same stored proposal recovered; harness invoked trusted approval; orders 0 → 1, dated capacity 2 → 1; other date capacity stayed 2 | PASS |
+| Duplicate resume | Same saved booking returned; business rows unchanged | PASS |
+| Fresh availability | Actual `check_pickup_slot` call returned 1 remaining on 2026-11-02; business rows unchanged | PASS |
+
+The temporary fixture booking ID was
+`e9cd6694-21d3-447a-a5fe-55b04c627d75`. Approval was performed by the trusted
+verification harness, not the model. Checkpoint reopen used a new connection in
+the same harness process; separate-process restart remains covered offline.
+All business/checkpoint files for this live run were temporary. SHA-256 comparisons
+confirmed the original `laundry.db` and existing runtime database files were unchanged.
+The live run exercised the backend graph, not a live browser click workflow.
+
+The calendar was subsequently placed inside the “Start with your laundry” card,
+above Service, while remaining outside the submission form so date changes refresh
+availability immediately. All 21 interface cases passed after that layout change.
+
 ## Customer interface refinement
 
 After the packaging baseline below, the customer interface was redesigned with

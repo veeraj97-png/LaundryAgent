@@ -2,8 +2,8 @@
 
 This interface uses synthetic laundry data. Session IDs provide continuity,
 not authentication. Run it locally; it is not a customer-facing hosted service.
-Slots have no dates. Availability is a current snapshot; turnaround days are
-estimates, not promised delivery dates.
+Choose a calendar pickup date in India time. Availability is a current snapshot
+for that date/window; turnaround days are estimates, not promised delivery dates.
 
 ## Start
 
@@ -25,7 +25,7 @@ a request builder. Choose a service, garment quantity and available pickup
 window, then use **Just get a quote** or **Review proposal →**. Both submit an
 ordinary customer request through the existing graph; neither bypasses approval.
 Full pickup windows are excluded from the builder, but price estimates remain
-available if all windows are full. No dated scheduling or payment is added.
+available if all windows are full. Pickup-date scheduling is implemented; payment and delivery-date scheduling are not.
 
 The review panel presents readable terms with full proposal references in an
 expander. Confirmations display a receipt checked against stored business records
@@ -54,8 +54,9 @@ variables at real customer data. Business and checkpoint paths must differ.
 
 1. Ask: "What would it cost to wash and iron five garments?" Check the Rs 250
    answer and expand Tool activity to see calculate_quote and its safe arguments.
-2. Ask: "Prepare a proposal to wash and iron five garments, morning pickup."
-   If morning is full, select an available alternative shown in the sidebar.
+2. Ask: "Prepare a proposal to wash and iron five garments, morning pickup tomorrow."
+   Choose a date in the calendar first. If morning is full on that date, choose
+   an available alternative or another date.
 3. Review all stored terms, request ID and snapshot ID. The chat input is disabled
    while a decision is pending. Click Reject: no booking/capacity change occurs.
 4. Request a new proposal and click Approve. Read the saved booking ID and
@@ -140,7 +141,7 @@ allows a new customer-submitted question; it does not automatically retry.
 The CLI instead exits on technical failure and must be restarted with the same
 session/database paths. Interrupted booking work requires explicit recovery in
 the UI. Session IDs do not enforce identity or ownership; this is a trusted local
-demo. Approval still cannot promise calendar-date delivery for undated slots.
+demo. Approval stores a pickup date/window but still cannot promise a delivery date.
 
 For synthetic service prices, initial slot capacities, and the fact that one
 booking consumes one capacity unit regardless of garment quantity, see
@@ -154,3 +155,7 @@ Official API references consulted:
 - [Button behavior](https://docs.streamlit.io/develop/concepts/design/buttons)
 - [Chat input](https://docs.streamlit.io/develop/api-reference/chat/st.chat_input)
 - [AppTest](https://docs.streamlit.io/develop/api-reference/app-testing/st.testing.v1.apptest)
+
+Current date handling and additive legacy migration are described in
+[docs/PICKUP_DATES.md](docs/PICKUP_DATES.md). Calendar changes refresh availability
+without model calls; the chosen date is part of the approved immutable terms.

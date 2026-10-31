@@ -19,11 +19,12 @@ import laundry_agent as agent
 from nebius_check import Config
 import shop
 import storage
+from test_date_helpers import TEST_DATE, seed_date
 from test_laundry_agent import FakeModel, call, reply, database_rows, FAKE_KEY
 
 
 EVIDENCE = []
-ARGUMENTS = {"service_code": "wash_and_iron", "quantity": 5, "slot_code": "morning"}
+ARGUMENTS = {"service_code": "wash_and_iron", "quantity": 5, "slot_code": "morning", "pickup_date": TEST_DATE}
 
 
 class AgentApprovalTests(unittest.TestCase):
@@ -37,9 +38,10 @@ class AgentApprovalTests(unittest.TestCase):
         self.database_patch.start()
         self.addCleanup(self.database_patch.stop)
         storage.initialize_database()
+        seed_date(self.business)
         self.before = database_rows(self.business)
         self.events = []
-        for name in ("shop.py", "storage.py", "nebius_check.py", "laundry_agent.py", "chat.py", "test_laundry_agent.py"):
+        for name in ("scheduling.py", "test_date_helpers.py", "shop.py", "storage.py", "nebius_check.py", "laundry_agent.py", "chat.py", "test_laundry_agent.py"):
             shutil.copy2(Path(__file__).parent / name, self.project / name)
 
     def tearDown(self):
@@ -189,7 +191,7 @@ class AgentApprovalTests(unittest.TestCase):
     def test_slot_fills_before_approval_no_false_confirmation_and_approval_remains(self):
         graph, _ = self.graph()
         pending = self.prepare(graph)
-        self.sql("UPDATE pickup_slots SET remaining_capacity=0 WHERE slot_code='morning'")
+        self.sql("UPDATE dated_pickup_slots SET remaining_capacity=0 WHERE slot_code='morning'")
         state = self.decide(graph, pending)
         self.assertIsNone(state["booking"])
         self.assertEqual(state["stop_reason"], "booking_failure")
@@ -223,7 +225,7 @@ class AgentApprovalTests(unittest.TestCase):
         self.assertIsNone(state["booking"])
 
     def test_duplicate_resume_at_zero_capacity_does_not_reapprove_or_book_twice(self):
-        self.sql("UPDATE pickup_slots SET remaining_capacity=1 WHERE slot_code='morning'")
+        self.sql("UPDATE dated_pickup_slots SET remaining_capacity=1 WHERE slot_code='morning'")
         graph, _ = self.graph()
         pending = self.prepare(graph)
         first = self.decide(graph, pending)
@@ -233,7 +235,7 @@ class AgentApprovalTests(unittest.TestCase):
                 self.assertEqual(self.decide(graph, pending, action), first)
         self.assertEqual(database_rows(self.business), before)
         self.assertEqual(len(before["orders"]), 1)
-        self.assertEqual(next(row["remaining_capacity"] for row in before["pickup_slots"] if row["slot_code"] == "morning"), 0)
+        self.assertEqual(next(row["remaining_capacity"] for row in before["dated_pickup_slots"] if row["slot_code"] == "morning"), 0)
 
     def test_checkpointed_id_reuses_draft_if_write_completed_before_checkpoint(self):
         graph, _ = self.graph()

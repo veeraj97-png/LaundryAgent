@@ -301,7 +301,7 @@ class CliAndPrivacyTests(unittest.TestCase):
     def test_import_has_no_env_network_database_or_prompt_side_effects(self):
         with tempfile.TemporaryDirectory(prefix="laundry-nebius-import-") as directory:
             project = Path(directory)
-            for name in ("nebius_check.py", "shop.py", "storage.py"):
+            for name in ("scheduling.py", "nebius_check.py", "shop.py", "storage.py"):
                 shutil.copy2(Path(__file__).parent / name, project / name)
             program = """
 from unittest.mock import patch

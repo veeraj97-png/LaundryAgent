@@ -21,6 +21,7 @@ def main():
     print(f"Quantity: {booking['quantity']} garments")
     print(f"Total price: Rs {booking['total_price']}")
     print(f"Pickup slot: {booking['slot_code']}")
+    print(f"Pickup date: {booking.get('pickup_date') or 'Not recorded (legacy booking)'}")
     print(f"Status: {booking['status']}")
 
 

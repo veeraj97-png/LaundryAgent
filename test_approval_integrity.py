@@ -18,6 +18,7 @@ from uuid import uuid4
 
 import shop
 import storage
+from test_date_helpers import TEST_DATE, seed_date
 
 
 TEST_EVIDENCE = []
@@ -29,13 +30,14 @@ class ApprovalIntegrityTests(unittest.TestCase):
         self.temporary = tempfile.TemporaryDirectory(prefix="laundry-approval-test-")
         self.addCleanup(self.temporary.cleanup)
         self.project = Path(self.temporary.name)
-        for name in ("shop.py", "storage.py", "check_order.py"):
+        for name in ("scheduling.py", "test_date_helpers.py", "shop.py", "storage.py", "check_order.py"):
             shutil.copy2(Path(__file__).parent / name, self.project / name)
         self.database = self.project / "laundry.db"
         self.database_patch = patch.object(storage, "DATABASE_PATH", self.database)
         self.database_patch.start()
         self.addCleanup(self.database_patch.stop)
         storage.initialize_database()
+        seed_date(self.database)
         self.initial = self.snapshot()
         self.events = []
 
@@ -59,14 +61,14 @@ class ApprovalIntegrityTests(unittest.TestCase):
             finally:
                 connection.close()
         result = {}
-        for table in ("orders", "pickup_slots", "booking_requests", "proposals"):
+        for table in ("orders", "pickup_slots", "dated_pickup_slots", "booking_requests", "proposals"):
             cursor = sqlite3.Connection.execute(connection, f"SELECT * FROM {table} ORDER BY 1")
             names = [column[0] for column in cursor.description]
             result[table] = [dict(zip(names, row)) for row in cursor.fetchall()]
         return result
 
     def prepare(self, quantity=5):
-        return shop.prepare_booking_proposal("wash_and_iron", quantity, "morning")
+        return shop.prepare_booking_proposal("wash_and_iron", quantity, "morning", TEST_DATE)
 
     def approve(self, proposal):
         return shop.record_proposal_decision(
@@ -80,7 +82,7 @@ class ApprovalIntegrityTests(unittest.TestCase):
 
     def capacity(self, state=None):
         state = self.snapshot() if state is None else state
-        return next(slot["remaining_capacity"] for slot in state["pickup_slots"]
+        return next(slot["remaining_capacity"] for slot in state["dated_pickup_slots"]
                     if slot["slot_code"] == "morning")
 
     def assert_refused(self, function, message):
@@ -109,7 +111,7 @@ class ApprovalIntegrityTests(unittest.TestCase):
         stored = storage.get_proposal(first["request_id"])
         self.assertEqual(stored["status"], "awaiting_approval")
         self.assertEqual(stored["quote"], first["quote"])
-        self.assertEqual(stored["pickup"], {key: first["pickup"][key] for key in ("slot_code", "display_name")})
+        self.assertEqual(stored["pickup"], {key: first["pickup"][key] for key in ("slot_code", "display_name", "pickup_date")})
         self.assertTrue(stored["created_at"])
         self.assertIsNone(stored["decided_at"])
         self.assertIsNone(stored["booked_at"])
@@ -280,7 +282,7 @@ print(json.dumps(shop.create_booking(p)))
                             "uncommitted": observed[0], "after_rollback": self.snapshot()})
 
     def test_duplicate_order_id_still_rolls_back_capacity(self):
-        self.sql("INSERT INTO orders VALUES (?,?,?,?,?,?)", ("existing", "wash_and_fold", 1, 30, "morning", "confirmed"))
+        self.sql("INSERT INTO orders (booking_id,service_code,quantity,total_price,slot_code,status) VALUES (?,?,?,?,?,?)", ("existing", "wash_and_fold", 1, 30, "morning", "confirmed"))
         proposal = self.prepare()
         self.approve(proposal)
         candidate = self.candidate(proposal)
@@ -293,12 +295,12 @@ print(json.dumps(shop.create_booking(p)))
     def test_capacity_failure_keeps_proposal_approved(self):
         proposal = self.prepare()
         self.approve(proposal)
-        self.sql("UPDATE pickup_slots SET remaining_capacity=0 WHERE slot_code='morning'")
+        self.sql("UPDATE dated_pickup_slots SET remaining_capacity=0 WHERE slot_code='morning'")
         self.assert_refused(lambda: shop.create_booking(proposal), "slot is unavailable")
         self.assertEqual(storage.get_proposal(proposal["request_id"])["status"], "approved")
 
     def test_last_slot_retry_and_restart_return_original_booking(self):
-        self.sql("UPDATE pickup_slots SET remaining_capacity=1 WHERE slot_code='morning'")
+        self.sql("UPDATE dated_pickup_slots SET remaining_capacity=1 WHERE slot_code='morning'")
         proposal = self.prepare()
         self.approve(proposal)
         booking = shop.create_booking(proposal)
@@ -364,7 +366,7 @@ print(json.dumps(result))
                     process.communicate(timeout=2)
 
     def test_concurrent_identical_requests_book_once(self):
-        self.sql("UPDATE pickup_slots SET remaining_capacity=1 WHERE slot_code='morning'")
+        self.sql("UPDATE dated_pickup_slots SET remaining_capacity=1 WHERE slot_code='morning'")
         proposal = self.prepare()
         self.approve(proposal)
         results = self.concurrent_bookings([proposal, proposal])
@@ -377,7 +379,7 @@ print(json.dumps(result))
         self.assertEqual(self.capacity(), 0)
 
     def test_concurrent_distinct_requests_cannot_overbook(self):
-        self.sql("UPDATE pickup_slots SET remaining_capacity=1 WHERE slot_code='morning'")
+        self.sql("UPDATE dated_pickup_slots SET remaining_capacity=1 WHERE slot_code='morning'")
         proposals = [self.prepare(), self.prepare()]
         for proposal in proposals:
             self.approve(proposal)
@@ -396,11 +398,12 @@ print(json.dumps(result))
         legacy = self.candidate(self.prepare())
         legacy.pop("snapshot_id")
         legacy["booking_id"] = "legacy-booking"
+        legacy["pickup"].pop("pickup_date", None)
         self.sql("DROP TABLE proposals")
-        self.sql("INSERT INTO orders VALUES (?,?,?,?,?,?)", ("legacy-booking", "wash_and_iron", 5, 250, "morning", "confirmed"))
+        self.sql("INSERT INTO orders (booking_id,service_code,quantity,total_price,slot_code,status) VALUES (?,?,?,?,?,?)", ("legacy-booking", "wash_and_iron", 5, 250, "morning", "confirmed"))
         self.sql("INSERT INTO booking_requests VALUES (?,?,?,?)", (legacy["request_id"], legacy["booking_id"],
                  storage._canonical_booking_details(legacy), json.dumps(legacy)))
-        self.sql("UPDATE pickup_slots SET remaining_capacity=0 WHERE slot_code='morning'")
+        self.sql("UPDATE dated_pickup_slots SET remaining_capacity=0 WHERE slot_code='morning'")
         connection = REAL_CONNECT(self.database)
         try:
             connection.row_factory = sqlite3.Row
@@ -435,7 +438,7 @@ print(json.dumps(result))
         before = self.snapshot()
         self.assertEqual(storage.get_booking(booking["booking_id"]), {
             "booking_id": booking["booking_id"], "service_code": "wash_and_iron", "quantity": 5,
-            "total_price": 250, "slot_code": "morning", "status": "confirmed"})
+            "total_price": 250, "slot_code": "morning", "status": "confirmed", "pickup_date": TEST_DATE})
         self.assertIsNone(storage.get_booking("unknown"))
         output = self.subprocess(["check_order.py"], "  " + booking["booking_id"] + "  \n")
         self.assertIn("Quantity: 5 garments", output)
@@ -452,7 +455,7 @@ print(json.dumps(result))
         self.assertEqual(hashlib.sha256(self.database.read_bytes()).hexdigest(), before_hash)
         empty = self.project / "no_database"
         empty.mkdir()
-        for name in ("shop.py", "storage.py", "check_order.py"):
+        for name in ("scheduling.py", "test_date_helpers.py", "shop.py", "storage.py", "check_order.py"):
             shutil.copy2(self.project / name, empty / name)
         self.assertEqual(self.subprocess(["-c", "import shop, storage, check_order"], cwd=empty), "")
         self.assertFalse((empty / "laundry.db").exists())
@@ -462,7 +465,7 @@ print(json.dumps(result))
                               ("quit", "quit\n"), ("invalid", "night\nmorning\nno\n")):
             with self.subTest(label=label):
                 before = self.snapshot()
-                output = self.subprocess(["shop.py"], inputs)
+                output = self.subprocess(["shop.py"], TEST_DATE + "\n" + inputs)
                 after = self.snapshot()
                 if label == "approve":
                     self.assertIn("Booking confirmed!", output)

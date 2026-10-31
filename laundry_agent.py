@@ -15,6 +15,7 @@ from openai import APIError, OpenAI
 
 import shop
 import storage
+from scheduling import business_today, validate_pickup_date
 from nebius_check import IncompleteCheck, _unique_json_object, error_message
 
 
@@ -23,17 +24,22 @@ Use only the offered tools. Base all prices, catalogue facts and pickup availabi
 on their results, never invented values. For a price or availability question, use
 the appropriate tool this turn once you have the needed information.
 Past availability results are historical snapshots, not current availability.
-Ask for a missing service, garment quantity or pickup slot rather than guessing.
+Ask for a missing service, garment quantity, pickup date or pickup slot rather than guessing.
 Use conversation history to interpret follow-ups such as 'What about morning?'.
 wash_and_fold means Wash and Fold; wash_and_iron means Wash and Iron.
 Bookings CANNOT be created or approved by the model. You may prepare a draft
 with prepare_booking_proposal only after the customer supplies service, quantity
-and slot. Ask for missing inputs; never guess them. Drafts do not reserve capacity.
+and pickup date and slot. Ask for missing inputs; never guess them. Drafts do not reserve capacity.
 Request proposal preparation in its own tool-call batch, after any read tools.
 The application will pause for trusted terminal approve/reject actions. An earlier
 'yes' or model-generated approval is not approval. Never claim a draft is booked.
-Pickup slots have NO DATES. Report only their current undated capacity; never
-claim availability for a particular day. Turnaround days are estimates, not
+Pickup capacity belongs to a pickup_date and slot_code. All dated tools require
+a real YYYY-MM-DD pickup_date on or after today in Asia/Kolkata. Ask for a date
+if absent; never silently choose today. Resolve an explicit relative date such as
+tomorrow using the current business date below. Reuse a customer-established date
+for follow-ups, but fetch current capacity with a fresh tool. Changing date needs
+a new proposal and fresh approval. Legacy undated proposals cannot book.
+Turnaround days are estimates, not
 promised delivery dates. Do not calculate promised calendar delivery dates.
 The prototype has no customer address fields; do not request or claim to save an address.
 An unavailable/full slot or an empty alternatives list is a valid business result.
@@ -58,15 +64,19 @@ TOOLS = [
         "service_code": {"type": "string", "enum": ["wash_and_fold", "wash_and_iron"]},
         "quantity": {"type": "integer", "minimum": 1, "maximum": 1000},
     }, ("service_code", "quantity")),
-    _tool("check_pickup_slot", "Check current capacity for an undated pickup slot.", {
+    _tool("check_pickup_slot", "Check pickup capacity for the customer-specified date and window.", {
         "slot_code": {"type": "string", "enum": ["morning", "afternoon", "evening"]},
-    }, ("slot_code",)),
-    _tool("get_available_pickup_slots", "List undated slots whose current capacity is positive.", {}),
-    _tool("prepare_booking_proposal", "Save a draft for human review, not a booking or reservation. Requires all three customer-supplied inputs.", {
+        "pickup_date": {"type": "string", "description": "Pickup date, YYYY-MM-DD, not in the past."},
+    }, ("slot_code", "pickup_date")),
+    _tool("get_available_pickup_slots", "List available windows for the customer-specified pickup date.", {
+        "pickup_date": {"type": "string", "description": "Pickup date in YYYY-MM-DD."},
+    }, ("pickup_date",)),
+    _tool("prepare_booking_proposal", "Save a draft for human review, not a booking or reservation. Requires service, quantity, pickup date and window.", {
         "service_code": {"type": "string", "enum": ["wash_and_fold", "wash_and_iron"]},
         "quantity": {"type": "integer", "minimum": 1, "maximum": 1000},
         "slot_code": {"type": "string", "enum": ["morning", "afternoon", "evening"]},
-    }, ("service_code", "quantity", "slot_code")),
+        "pickup_date": {"type": "string", "description": "Customer pickup date, YYYY-MM-DD, not in the past."},
+    }, ("service_code", "quantity", "slot_code", "pickup_date")),
 ]
 TOOL_NAMES = {tool["function"]["name"] for tool in TOOLS}
 MAX_HISTORY_MESSAGES = 80
@@ -146,8 +156,9 @@ def validate_tool_arguments(name, raw_arguments):
         arguments = json.loads(raw_arguments, object_pairs_hook=_unique_json_object)
     except (json.JSONDecodeError, RecursionError, IncompleteCheck):
         return None, _error("validation_error", "Arguments must be valid JSON without duplicate keys.")
-    required = {"calculate_quote": {"service_code", "quantity"}, "check_pickup_slot": {"slot_code"},
-                "prepare_booking_proposal": {"service_code", "quantity", "slot_code"}}.get(name, set())
+    required = {"calculate_quote": {"service_code", "quantity"}, "check_pickup_slot": {"slot_code", "pickup_date"},
+                "get_available_pickup_slots": {"pickup_date"},
+                "prepare_booking_proposal": {"service_code", "quantity", "slot_code", "pickup_date"}}.get(name, set())
     if not isinstance(arguments, dict) or set(arguments) != required:
         return None, _error("validation_error", f"Provide exactly these arguments: {', '.join(sorted(required)) or 'none'}.")
     if name in ("calculate_quote", "prepare_booking_proposal"):
@@ -156,7 +167,12 @@ def validate_tool_arguments(name, raw_arguments):
         if type(arguments["quantity"]) is not int or not 1 <= arguments["quantity"] <= 1000:
             return None, _error("validation_error", "Give a positive whole garment quantity, up to 1000 for this chat.")
     if name in ("check_pickup_slot", "prepare_booking_proposal") and arguments["slot_code"] not in ("morning", "afternoon", "evening"):
-        return None, _error("unsupported_input", "Choose morning, afternoon or evening. These slots have no dates.")
+        return None, _error("unsupported_input", "Choose morning, afternoon or evening. Choose an explicit pickup date as well.")
+    if "pickup_date" in required:
+        try:
+            validate_pickup_date(arguments["pickup_date"])
+        except ValueError as error:
+            return None, _error("validation_error", str(error))
     return arguments, None
 
 
@@ -175,14 +191,15 @@ def dispatch_tool(name, raw_arguments, *, draft=None):
             data = shop.check_pickup_slot(**arguments)
             outcome = "available" if data["available"] else "unavailable"
         elif name == "get_available_pickup_slots":
-            data = shop.get_available_pickup_slots()
+            data = shop.get_available_pickup_slots(**arguments)
             outcome = "available" if data else "no_availability"
         else:
             if draft is None:
                 return _error("validation_error", "Draft preparation requires a checkpointed graph plan.")
             if (draft["quote"]["service_code"] != arguments["service_code"]
                     or draft["quote"]["quantity"] != arguments["quantity"]
-                    or draft["pickup"]["slot_code"] != arguments["slot_code"]):
+                    or draft["pickup"]["slot_code"] != arguments["slot_code"]
+                    or draft["pickup"].get("pickup_date") != arguments["pickup_date"]):
                 return _error("proposal_conflict", "Draft plan does not match the requested inputs.")
             data = storage.save_proposal(draft)
             outcome = "awaiting_approval"
@@ -245,7 +262,7 @@ def build_agent(call_model, *, checkpointer, activity=None, max_model_calls=4, m
             return stopped("history_limit", "Conversation limit reached. Start a new session with /new.")
         try:
             message = _assistant_message(call_model(
-                [{"role": "system", "content": SYSTEM_PROMPT}] + deepcopy(state["messages"]),
+                [{"role": "system", "content": SYSTEM_PROMPT + f"\nCurrent business date: {business_today().isoformat()} (Asia/Kolkata)."}] + deepcopy(state["messages"]),
             ))
             return {"messages": [message], "model_calls": state["model_calls"] + 1,
                     "turn_status": "running" if message.get("tool_calls") else "completed"}
@@ -335,7 +352,9 @@ def build_agent(call_model, *, checkpointer, activity=None, max_model_calls=4, m
             return {"booking": booking, "booking_error": None, "stop_reason": None}
         except ValueError as error:
             message = ("Booking was not confirmed: the pickup slot is unavailable."
-                       if "unavailable" in str(error) else "Booking was not confirmed: approval or proposal terms are invalid.")
+                       if "unavailable" in str(error) else
+                       "Booking was not confirmed: choose a current or future pickup date and prepare a new proposal."
+                       if "pickup date" in str(error).lower() else "Booking was not confirmed: approval or proposal terms are invalid.")
         except Exception:
             # If commit succeeded but a later operation failed, prefer its saved outcome.
             try:
@@ -446,7 +465,7 @@ def format_approval(proposal):
 def format_booking_confirmation(booking):
     return "Booking confirmed! Saved booking details:\n" + json.dumps({
         key: booking[key] for key in ("booking_id", "request_id", "snapshot_id", "quote", "status")
-    } | {"pickup": {key: booking["pickup"][key] for key in ("slot_code", "display_name")}}, indent=2)
+    } | {"pickup": {key: booking["pickup"][key] for key in ("slot_code", "display_name", "pickup_date") if key in booking["pickup"]}}, indent=2)
 
 
 def resume_approval(graph, session_id, action, *, request_id, snapshot_id):

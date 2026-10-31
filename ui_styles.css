@@ -32,7 +32,8 @@ h3 { font-size: 1.35rem !important; }
 [data-testid="stButton"] button, [data-testid="stFormSubmitButton"] button { border-radius: 11px; min-height: 44px; font-weight: 600; }
 [data-testid="stButton"] button[kind="primary"], [data-testid="stFormSubmitButton"] button[kind="primary"] { background: #2368c4; border-color: #2368c4; color: #fff; }
 [data-testid="stButton"] button[kind="primary"]:hover, [data-testid="stFormSubmitButton"] button[kind="primary"]:hover { background: #17519c; border-color: #17519c; }
-[data-testid="stForm"] { background: #fff; border: 1px solid #cfdeee; border-radius: 18px; padding: 1.25rem; }
+.st-key-laundry_builder { background: #fff; border: 1px solid #cfdeee; border-radius: 18px; padding: 1.25rem; }
+.st-key-laundry_builder [data-testid="stForm"] { border: 0; padding: 0; }
 .st-key-conversation_panel { background: #fff; border-radius: 18px; border-color: #cfdeee; }
 [data-testid="stChatMessage"] { border-radius: 14px; background: #eef5ff; padding: 1.1rem; margin-bottom: .75rem; }
 [data-testid="stChatMessage"]:has([data-testid="stChatMessageAvatarUser"]) { background: #f2f6fc; }

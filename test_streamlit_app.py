@@ -15,10 +15,11 @@ from streamlit.testing.v1 import AppTest
 import laundry_agent as agent
 from nebius_check import Config, ConfigurationError
 import streamlit_backend as backend
+from test_date_helpers import TEST_DATE, seed_date
 from test_laundry_agent import FakeModel, call, reply, database_rows, FAKE_KEY
 
 
-ARGS = {"service_code": "wash_and_iron", "quantity": 5, "slot_code": "morning"}
+ARGS = {"service_code": "wash_and_iron", "quantity": 5, "slot_code": "morning", "pickup_date": TEST_DATE}
 
 
 class StreamlitTests(unittest.TestCase):
@@ -39,6 +40,10 @@ class StreamlitTests(unittest.TestCase):
     def app(self):
         app = AppTest.from_file(str(Path(__file__).with_name("app.py")), default_timeout=20).run()
         self.assertFalse(app.exception)
+        if not app.error:
+            seed_date(self.business)
+            if not app.date_input(key="order_date").disabled:
+                app.date_input(key="order_date").set_value(__import__("datetime").date.fromisoformat(TEST_DATE)).run()
         return app
 
     def send(self, app, text):
@@ -54,7 +59,7 @@ class StreamlitTests(unittest.TestCase):
         return next(value.value for value in app.json if "snapshot_id" in value.value)
 
     def text(self, app):
-        return "\n".join(item.value for kind in (app.markdown, app.warning, app.error) for item in kind)
+        return "\n".join(item.value for kind in (app.markdown, app.warning, app.error) for item in kind if not item.value.startswith("<style>"))
 
     def test_quote_display_activity_and_redraw_are_read_only(self):
         app = self.app()
@@ -99,7 +104,7 @@ class StreamlitTests(unittest.TestCase):
         self.assertEqual(len(rows["orders"]), 1)
         booking_id = rows["orders"][0]["booking_id"]
         self.assertIn(booking_id, self.text(app))
-        self.assertEqual(next(s for s in rows["pickup_slots"] if s["slot_code"] == "morning")["remaining_capacity"], 1)
+        self.assertEqual(next(s for s in rows["dated_pickup_slots"] if s["slot_code"] == "morning")["remaining_capacity"], 1)
         self.assertEqual(rows["proposals"][0]["state"], "booked")
         app.run()
         self.button(app, "Refresh availability").click().run()
@@ -274,7 +279,7 @@ class StreamlitTests(unittest.TestCase):
     def test_full_pickup_windows_disable_proposals_but_allow_quotes(self):
         app = self.app()
         with sqlite3.connect(self.business) as connection:
-            connection.execute("UPDATE pickup_slots SET remaining_capacity = 0")
+            connection.execute("UPDATE dated_pickup_slots SET remaining_capacity = 0")
         app.run()
         before = database_rows(self.business)
         self.assertTrue(self.button(app, "Review proposal →").disabled)
@@ -304,6 +309,51 @@ class StreamlitTests(unittest.TestCase):
         self.send(app, "What is my booking?")
         self.assertTrue(any("couldn't verify" in warning.value for warning in app.warning))
         self.assertNotIn("✓ Booking confirmed!", self.text(app))
+        self.assertEqual(database_rows(self.business), before)
+
+    def test_date_picker_refreshes_only_that_days_capacity_without_model_calls(self):
+        from datetime import date, timedelta
+        app = self.app()
+        other = (date.fromisoformat(TEST_DATE) + timedelta(days=1)).isoformat()
+        seed_date(self.business, other)
+        with sqlite3.connect(self.business) as connection:
+            connection.execute("UPDATE dated_pickup_slots SET remaining_capacity=0 WHERE pickup_date=? AND slot_code='morning'", (other,))
+        before = database_rows(self.business)
+        app.date_input(key="order_date").set_value(date.fromisoformat(other)).run()
+        self.assertFalse(app.exception)
+        self.assertEqual(self.model.requests, [])
+        self.assertTrue(all(not value.startswith("Morning") for value in app.selectbox(key="order_slot").options))
+        self.assertEqual(database_rows(self.business), before)
+        app.date_input(key="order_date").set_value(date.fromisoformat(TEST_DATE)).run()
+        self.assertTrue(any(value.startswith("Morning") for value in app.selectbox(key="order_slot").options))
+
+    def test_form_binds_selected_date_to_review_and_saved_receipt(self):
+        from datetime import date, timedelta
+        app = self.app()
+        other = (date.fromisoformat(TEST_DATE) + timedelta(days=1)).isoformat()
+        app.date_input(key="order_date").set_value(date.fromisoformat(other)).run()
+        self.model.responses.append(reply(calls=[call("prepare_booking_proposal", {**ARGS, "pickup_date": other})]))
+        app.selectbox(key="order_service").set_value("wash_and_iron")
+        self.button(app, "Review proposal →").click().run()
+        self.assertIn(other, self.model.requests[0][-1]["content"])
+        self.assertIn(other, self.text(app))
+        self.assertEqual(len(app.date_input), 0)
+        self.button(app, "Approve").click().run()
+        self.assertFalse(app.exception)
+        rows = database_rows(self.business)
+        self.assertEqual(rows["orders"][0]["pickup_date"], other)
+        self.assertIn(other, self.text(app))
+        self.assertEqual(app.date_input(key="order_date").value, date.fromisoformat(other))
+        self.assertEqual(len(self.model.requests), 1)
+
+    def test_clearing_date_does_not_submit_or_allow_undated_proposals(self):
+        app = self.app()
+        before = database_rows(self.business)
+        app.date_input(key="order_date").set_value(None).run()
+        self.assertFalse(app.exception)
+        self.assertTrue(self.button(app, "Review proposal →").disabled)
+        self.assertFalse(self.button(app, "Just get a quote").disabled)
+        self.assertEqual(self.model.requests, [])
         self.assertEqual(database_rows(self.business), before)
 
 

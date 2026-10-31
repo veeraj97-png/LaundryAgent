@@ -70,7 +70,7 @@ def main(argv=None):
                         activity=lambda event: emit("[tool] " + json.dumps(event))) as graph:
             session_id = arguments.session or str(uuid4())
             emit("LaundryAgent: the model cannot create bookings. Drafts require a trusted terminal approve/reject action.")
-            emit("Pickup slots have no dates; drafts do not reserve capacity.")
+            emit("Choose a pickup date (YYYY-MM-DD) and window. Dates use India time; drafts reserve no capacity.")
             emit("Conversation checkpoints persist locally. /new starts a separate session; /quit exits.")
             emit("Session IDs are not authentication. This is a local synthetic-data prototype.")
             emit("Old availability messages are historical snapshots; current questions use a fresh lookup.")

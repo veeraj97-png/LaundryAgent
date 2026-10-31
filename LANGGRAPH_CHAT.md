@@ -18,14 +18,14 @@ python chat.py --session proposal-demo --business-db /tmp/laundry-demo-business.
 Try these as separate turns:
 
 1. What would it cost to wash and iron five garments?
-2. Is evening pickup available?
+2. Is evening pickup available tomorrow?
 3. What about morning?
 
 For the new proposal flow, ask:
 
-> Prepare a proposal to wash and iron five garments, morning pickup.
+> Prepare a proposal to wash and iron five garments, morning pickup tomorrow.
 
-The model must collect service, quantity and slot; it may not guess missing
+The model must collect service, quantity, pickup date and slot; it may not guess missing
 inputs. The application then displays the exact stored service code/name,
 quantity, unit/total price, turnaround estimate and slot code/display window,
 plus `request_id` and `snapshot_id`. This is a draft, not a reservation.
@@ -53,8 +53,8 @@ Without `--session`, the CLI generates an ID and prints the exact command
 to resume it. `/new` starts an independent saved session and prints its
 resume command; `/quit` exits. Checkpoints and pending approvals survive restart.
 The model can save drafts but cannot approve or create a booking itself.
-Slots have no dates, so current capacity is not a promise for a particular
-day. Turnaround estimates are not promised calendar delivery dates.
+New bookings require a pickup date and window. Capacity is independent for
+each date; turnaround estimates are not promised calendar delivery dates.
 Customer addresses are not supported or requested by this prototype.
 
 Startup explicitly calls the existing `initialize_database()`. That may
@@ -165,7 +165,7 @@ Do not use the same thread from multiple chat processes simultaneously.
 Checkpoints contain local conversation text; do not put credentials in chat.
 
 Old availability messages are historical snapshots. A question about current
-availability must use a fresh tool lookup. Slot data still has no dates.
+availability must use a fresh tool lookup. Reads require an explicit customer-established pickup date.
 
 An expected approval interrupt is recognized and displayed for a trusted
 decision. New free-form chat cannot skip it. The known draft-write and
@@ -222,7 +222,7 @@ button. Recovery is not a generic retry loop or a human-support handoff.
   success/error outcomes. Raw errors, credentials and private reasoning
   are not displayed. Provider reasoning fields are not put into history.
 - The prompt requires current tool results for prices/availability, asks
-  for missing information, and states the booking/date limitations.
+  for missing information, and states the booking and delivery-date limitations.
   Natural-language interpretation remains model behaviour, not a new
   business validation rule. Only draft creation is a model-accessible write;
   no approval, booking, superseding, arbitrary SQL or order-lookup tool exists.
@@ -260,9 +260,9 @@ included an explicit user-approved terminal demo and a user-operated Streamlit
 demo. No live requests were made for submission packaging. See the consolidated
 [evaluation](docs/EVALUATION.md) for actual evidence and current suite totals.
 
-The seed data and one-unit-per-booking capacity rule are described in the
-[README](README.md#synthetic-data-and-business-rules). There are no dated slots
-or guaranteed calendar-date deliveries, even after approval.
+The date-scoped seed data and one-unit-per-booking capacity rule are described in the
+[README](README.md#synthetic-data-and-business-rules). Pickup windows are date-scoped. Delivery dates are not guaranteed.
+See [pickup dates](docs/PICKUP_DATES.md) for migration and date-validation rules.
 
 ## Official references consulted
 

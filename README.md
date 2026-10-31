@@ -2,7 +2,7 @@
 
 LaundryAgent is a guided Python learning project for a local laundry customer
 assistant. A customer can ask about services, prices and pickup capacity, then
-review a stored proposal before explicitly approving a synthetic booking.
+choose a pickup date and review a stored proposal before explicitly approving a synthetic booking.
 The prototype demonstrates a conversational tool loop with persistent state and
 business protections. It makes no measured time-saving or production-readiness
 claim. Use synthetic data only.
@@ -67,7 +67,7 @@ Open the printed localhost URL. Try:
 
 Then:
 
-> Prepare a proposal to wash and iron five garments, morning pickup.
+> Prepare a proposal to wash and iron five garments, morning pickup tomorrow.
 
 Review all terms before clicking Approve or Reject. Chat is disabled while the
 decision is pending. A proposal is not a reservation. If capacity changes before
@@ -88,7 +88,7 @@ Orders start empty in a fresh database and are generated during demonstrations.
 Quotes multiply the unit price by a positive whole garment quantity. The agent
 restricts quantity to 1–1,000. Five wash-and-iron garments cost Rs 250.
 
-| Pickup code | Display window | Initial capacity |
+| Pickup code | Display window (India time) | Initial capacity per date |
 |---|---|---:|
 | `morning` | 9 AM–12 PM | 2 |
 | `afternoon` | 12 PM–4 PM | 0 |
@@ -99,8 +99,9 @@ quantity. Rejection and proposal preparation consume none. Identical successful
 request retries return the original booking and consume none again. Changing
 commercial details requires a new proposal and fresh approval.
 
-Slots are undated. Neither approval nor turnaround estimates promise a specific
-calendar pickup/delivery date. No address collection, tax, payment or delivery
+New pickups require a calendar date on or after today in India time. Capacity
+is tracked independently for each date/window. A confirmed pickup date does not
+create a promised delivery date; turnaround remains an estimate. No address collection, tax, payment or delivery
 scheduling workflow is implemented.
 
 ## Business records versus conversation checkpoints
@@ -108,7 +109,7 @@ scheduling workflow is implemented.
 The UI defaults to project-relative, gitignored files:
 
 - `runtime/ui_business.db`: orders, pickup slots, immutable proposals, decisions
-  and completed-request mappings.
+  and completed-request mappings, including date-specific pickup capacity.
 - `runtime/ui_checkpoints.db`: LangGraph messages, state and pending graph steps.
 
 The UI refuses the original project `laundry.db`. To isolate another demo, set
@@ -178,6 +179,7 @@ approval, booking, superseding, arbitrary code, SQL or general order lookup tool
 - [Streamlit reruns, sessions and controls](STREAMLIT_DEMO.md)
 - [One-off Nebius connectivity/tool protocol](NEBIUS_SETUP.md)
 - [Development prompts, iterations and learning evidence](docs/DEVELOPMENT_JOURNEY.md)
+- [Pickup dates, migration and daily capacity](docs/PICKUP_DATES.md)
 - [Evaluation](docs/EVALUATION.md)
 - [Planned demo under five minutes](docs/DEMO_SCRIPT.md)
 - [Case-study source for a Google Doc](docs/CASE_STUDY.md)
@@ -196,3 +198,7 @@ Git ignores credentials, environments, runtime databases/sidecars, generated
 artifacts and recordings. `.env.example` contains placeholders only. Local Git
 preparation does not publish anything. Recording, personal review, Google Doc
 creation and any later commit/remote/push are separate manual submission steps.
+
+Pickup-date migration preserves older undated orders without inventing dates.
+Old pending undated proposals need replacement and fresh approval. See the
+[pickup-date guide](docs/PICKUP_DATES.md) for same-day and calendar limitations.

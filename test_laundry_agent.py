@@ -21,6 +21,7 @@ import laundry_agent as agent
 from nebius_check import Config
 import shop
 import storage
+from test_date_helpers import TEST_DATE, seed_date
 
 
 EVIDENCE = []
@@ -28,6 +29,9 @@ FAKE_KEY = "offline-private-key-not-real"
 
 
 def call(name, arguments, call_id="offline-call"):
+    # Existing fake scenarios explicitly use this shared future date.
+    if name in ("check_pickup_slot", "get_available_pickup_slots", "prepare_booking_proposal") and isinstance(arguments, dict):
+        arguments = {"pickup_date": TEST_DATE, **arguments}
     return {"id": call_id, "type": "function", "function": {
         "name": name, "arguments": json.dumps(arguments),
     }}
@@ -77,6 +81,7 @@ class ReadOnlyAgentTests(unittest.TestCase):
         self.database_patch.start()
         self.addCleanup(self.database_patch.stop)
         storage.initialize_database()
+        seed_date(self.database)
         self.before = database_rows(self.database)
         self.activity = []
 
@@ -121,10 +126,10 @@ class ReadOnlyAgentTests(unittest.TestCase):
         quote = agent.dispatch_tool("calculate_quote", '{"service_code":"wash_and_iron","quantity":5}')
         self.assertEqual(quote["data"], shop.calculate_quote("wash_and_iron", 5))
         self.assertEqual(quote["data"]["total_price"], 250)
-        slot = agent.dispatch_tool("check_pickup_slot", '{"slot_code":"morning"}')
+        slot = agent.dispatch_tool("check_pickup_slot", json.dumps({"slot_code":"morning", "pickup_date": TEST_DATE}))
         self.assertEqual(slot["data"]["remaining_capacity"], 2)
         self.assertEqual(slot["outcome"], "available")
-        available = agent.dispatch_tool("get_available_pickup_slots", "{}")
+        available = agent.dispatch_tool("get_available_pickup_slots", json.dumps({"pickup_date": TEST_DATE}))
         self.assertEqual({slot["slot_code"] for slot in available["data"]}, {"morning", "evening"})
         self.assertEqual(database_rows(self.database), self.before)
 
@@ -143,16 +148,16 @@ class ReadOnlyAgentTests(unittest.TestCase):
         self.assertEqual(agent.dispatch_tool("read_service_catalogue", '{"extra":1}')["error"]["code"], "validation_error")
 
     def test_unsupported_full_empty_and_technical_results_are_distinct(self):
-        self.assertEqual(agent.dispatch_tool("check_pickup_slot", '{"slot_code":"night"}')["error"]["code"], "unsupported_input")
-        full = agent.dispatch_tool("check_pickup_slot", '{"slot_code":"afternoon"}')
+        self.assertEqual(agent.dispatch_tool("check_pickup_slot", json.dumps({"slot_code":"night", "pickup_date": TEST_DATE}))["error"]["code"], "unsupported_input")
+        full = agent.dispatch_tool("check_pickup_slot", json.dumps({"slot_code":"afternoon", "pickup_date": TEST_DATE}))
         self.assertTrue(full["ok"])
         self.assertEqual(full["outcome"], "unavailable")
         with patch.object(shop, "get_available_pickup_slots", return_value=[]):
-            empty = agent.dispatch_tool("get_available_pickup_slots", "{}")
+            empty = agent.dispatch_tool("get_available_pickup_slots", json.dumps({"pickup_date": TEST_DATE}))
             self.assertTrue(empty["ok"])
             self.assertEqual(empty["outcome"], "no_availability")
         with patch.object(shop, "check_pickup_slot", side_effect=sqlite3.OperationalError(FAKE_KEY)):
-            failed = agent.dispatch_tool("check_pickup_slot", '{"slot_code":"morning"}')
+            failed = agent.dispatch_tool("check_pickup_slot", json.dumps({"slot_code":"morning", "pickup_date": TEST_DATE}))
             self.assertEqual(failed["error"]["code"], "technical_failure")
             self.assertNotIn(FAKE_KEY, json.dumps(failed))
 
@@ -179,7 +184,7 @@ class ReadOnlyAgentTests(unittest.TestCase):
     def test_multiple_tool_calls_are_all_answered_before_model_runs(self):
         graph, model = self.graph([
             reply(calls=[call("check_pickup_slot", {"slot_code": "evening"}, "evening-1"),
-                         call("check_pickup_slot", {"slot_code": "morning"}, "morning-1")]),
+                         call("check_pickup_slot", {"slot_code": "morning", "pickup_date": TEST_DATE}, "morning-1")]),
             reply("The undated evening and morning slots both have capacity."),
         ])
         result = agent.run_turn(graph, "two-slots", "Check evening and morning")
@@ -216,7 +221,7 @@ class ReadOnlyAgentTests(unittest.TestCase):
             self.assertTrue(any(message.get("content") == "Is evening pickup available?" for message in messages))
             self.assertTrue(any(message["role"] == "tool" and '"evening"' in message["content"] for message in messages))
             self.assertEqual(messages[-1]["content"], "What about morning?")
-            return reply(calls=[call("check_pickup_slot", {"slot_code": "morning"}, "follow-morning")])
+            return reply(calls=[call("check_pickup_slot", {"slot_code": "morning", "pickup_date": TEST_DATE}, "follow-morning")])
         graph, model = self.graph([
             reply(calls=[call("check_pickup_slot", {"slot_code": "evening"}, "first-evening")]), reply("Evening has capacity; slots have no dates."),
             morning_request, reply("Morning has capacity too; this is undated availability."),
@@ -270,7 +275,7 @@ class ReadOnlyAgentTests(unittest.TestCase):
 
     def test_technical_tool_failure_stops_and_skips_rest_of_batch(self):
         graph, model = self.graph([reply(calls=[
-            call("check_pickup_slot", {"slot_code": "morning"}, "broken-slot"),
+            call("check_pickup_slot", {"slot_code": "morning", "pickup_date": TEST_DATE}, "broken-slot"),
             call("calculate_quote", {"service_code": "wash_and_iron", "quantity": 5}, "skipped-quote"),
         ])])
         with patch.object(shop, "check_pickup_slot", side_effect=sqlite3.OperationalError(FAKE_KEY)):
@@ -307,7 +312,7 @@ class ReadOnlyAgentTests(unittest.TestCase):
         self.assertEqual(self.activity[0]["error"], "validation_error")
 
     def test_prompt_requires_grounding_clarification_read_only_and_no_dates(self):
-        for instruction in ("on their results", "Ask for a missing", "Bookings CANNOT", "NO DATES", "technical_failure", "no customer address fields"):
+        for instruction in ("on their results", "Ask for a missing", "Bookings CANNOT", "pickup_date", "technical_failure", "no customer address fields"):
             self.assertIn(instruction, agent.SYSTEM_PROMPT)
         graph, _ = self.graph([reply("Bookings cannot be created through this chat. Which service would you like a quote for?")])
         with patch.object(shop, "create_booking", side_effect=AssertionError("No booking allowed")):
@@ -362,7 +367,7 @@ class ReadOnlyAgentTests(unittest.TestCase):
         self.assertEqual(database_rows(self.database), self.before)
 
     def test_imports_do_not_load_config_prompt_network_or_initialize_database(self):
-        for name in ("shop.py", "storage.py", "nebius_check.py", "laundry_agent.py", "chat.py"):
+        for name in ("scheduling.py", "test_date_helpers.py", "shop.py", "storage.py", "nebius_check.py", "laundry_agent.py", "chat.py"):
             shutil.copy2(Path(__file__).parent / name, self.project / name)
         before_bytes = self.database.read_bytes()
         program = """

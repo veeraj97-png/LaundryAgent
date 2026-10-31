@@ -19,14 +19,14 @@ is not evidence of measured time savings or a production-ready business service.
 
 The catalogue contains Wash and Fold at Rs 30 per garment with an estimated
 two-day turnaround, and Wash and Iron at Rs 50 with an estimated three-day
-turnaround. Five wash-and-iron garments cost Rs 250. New databases seed morning
+turnaround. Five wash-and-iron garments cost Rs 250. Each new pickup date starts with morning
 capacity 2 (9 AM–12 PM), afternoon 0 (12 PM–4 PM), and evening 3 (4 PM–8 PM).
 Orders begin empty and are created during demonstrations.
 
 Each booking consumes one pickup capacity unit regardless of garment quantity.
 Draft preparation and rejection consume none. Initialization is repeatable and
-does not restore consumed capacity. Slots have no dates; approval does not
-guarantee calendar-date pickup or delivery. There are no real customer records,
+does not restore consumed capacity. New bookings require a date and window; capacity is tracked per date.
+Pickup dates use India time and do not create guaranteed delivery dates. There are no real customer records,
 addresses, payments, taxes or delivery scheduling in this dataset.
 
 ## Architecture and tools
@@ -72,7 +72,7 @@ must perform a new lookup.
 Proposal preparation persists immutable commercial details under a stable
 request ID. A snapshot identifier binds approval to the stored terms. The review
 includes service code/name, quantity, unit and total price, turnaround estimate,
-slot code/window, request ID and snapshot ID.
+pickup date, slot code/window, request ID and snapshot ID.
 
 The graph interrupts rather than asking the model to authorize a booking.
 Streamlit disables normal chat while pending and presents Approve/Reject buttons.
@@ -163,7 +163,7 @@ fresh CPython 3.12.10 virtual environment. No real `.env` or original database w
 copied. Tests use fake responses and real graph/business logic with temporary
 databases, including subprocess restarts, concurrency and Streamlit AppTest.
 Fresh dependency installation and `pip check` passed. Original Python files and
-databases retained their hashes and modification times.
+databases retained their hashes and modification times during that packaging step.
 
 The suite covers quote dispatch, conditional routing, multi-call sequencing,
 session isolation, pending approval restart, rejection, altered terms, duplicate
@@ -181,7 +181,7 @@ made for packaging. Detailed evidence and untested areas are in
 
 ## Limitations and future work
 
-Customer identity/ownership, authentication, dated scheduling, payments, encrypted
+Customer identity/ownership, authentication, delivery scheduling, payments, encrypted
 checkpoint storage, retention policies, shared multi-user operation and general
 interruption recovery remain unimplemented. The project has no production or
 reliability benchmark. Mobile/other-platform testing and full transitive dependency
@@ -200,3 +200,12 @@ those integrations or add voice, external messaging or public hosting.
 - Rehearse and record the [planned demo](DEMO_SCRIPT.md), then add its link.
 - Choose sanitized evidence and copy/edit this source into your Google Doc.
 - Review the local repository before deciding on a commit, remote or publication.
+
+## Pickup date extension
+
+A later requested step added a customer calendar, date-required tools and new
+per-date/window capacity rows. The date is included in immutable terms, approvals,
+orders and receipts. Legacy orders keep an unrecorded date rather than an invented
+one; old pending undated proposals require replacement. Completed retries remain
+valid even after the booked date passes. See [PICKUP_DATES.md](PICKUP_DATES.md)
+and the latest [evaluation](EVALUATION.md) for the new test evidence.

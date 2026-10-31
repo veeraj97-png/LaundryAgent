@@ -2,6 +2,7 @@
 # All prices are in Indian rupees, per garment.
 from copy import deepcopy
 from uuid import uuid4
+from scheduling import validate_pickup_date
 from storage import (
     initialize_database, read_pickup_slots, save_booking, save_proposal,
     record_proposal_decision as record_stored_decision,
@@ -42,8 +43,9 @@ def calculate_quote(service_code, quantity):
         "total_price": total_price,
         "turnaround_days": service["turnaround_days"],
     }
-def check_pickup_slot(slot_code): 
-    for slot in read_pickup_slots():
+def check_pickup_slot(slot_code, pickup_date=None):
+    pickup_date = validate_pickup_date(pickup_date)
+    for slot in read_pickup_slots(pickup_date):
         if slot["slot_code"] == slot_code:
             return {
                 **slot,
@@ -52,10 +54,11 @@ def check_pickup_slot(slot_code):
 
     raise ValueError("Please choose a supported pickup slot.")
 
-def get_available_pickup_slots():
+def get_available_pickup_slots(pickup_date=None):
     available_slots = []
 
-    for slot in read_pickup_slots():
+    pickup_date = validate_pickup_date(pickup_date)
+    for slot in read_pickup_slots(pickup_date):
         if slot["remaining_capacity"] > 0:
             available_slots.append({
                 **slot,
@@ -65,10 +68,10 @@ def get_available_pickup_slots():
     return available_slots
 
 
-def build_booking_proposal(service_code, quantity, slot_code, *, request_id=None):
+def build_booking_proposal(service_code, quantity, slot_code, pickup_date=None, *, request_id=None):
     """Build terms without writing, so a graph can checkpoint them first."""
     quote = calculate_quote(service_code, quantity)
-    pickup = check_pickup_slot(slot_code)
+    pickup = check_pickup_slot(slot_code, pickup_date)
 
     if not pickup["available"]:
         raise ValueError("That pickup slot is full.")
@@ -82,8 +85,8 @@ def build_booking_proposal(service_code, quantity, slot_code, *, request_id=None
 
 
 
-def prepare_booking_proposal(service_code, quantity, slot_code):
-    proposal = build_booking_proposal(service_code, quantity, slot_code)
+def prepare_booking_proposal(service_code, quantity, slot_code, pickup_date=None):
+    proposal = build_booking_proposal(service_code, quantity, slot_code, pickup_date)
     stored = save_proposal(proposal)
     proposal["snapshot_id"] = stored["snapshot_id"]
     return proposal
@@ -127,6 +130,17 @@ def main():
 
     selected_slot = None
 
+    while True:
+        entered_date = input("Pickup date (YYYY-MM-DD), or quit: ").strip()
+        if entered_date.lower() == "quit":
+            print("Pickup selection cancelled.")
+            return
+        try:
+            pickup_date = validate_pickup_date(entered_date)
+            break
+        except ValueError as error:
+            print(str(error))
+
     # Ask the customer to select a pickup slot.
     while True:
         requested_slot = input(
@@ -139,7 +153,7 @@ def main():
             break
 
         try:
-            pickup = check_pickup_slot(requested_slot)
+            pickup = check_pickup_slot(requested_slot, pickup_date)
 
         
             if pickup["available"]:
@@ -149,7 +163,7 @@ def main():
                 break
 
             print(f"\nRequested slot full: {pickup['display_name']}")
-            alternatives = get_available_pickup_slots()
+            alternatives = get_available_pickup_slots(pickup_date)
 
             if not alternatives:
                 print("No pickup slots are currently available.")
@@ -174,6 +188,7 @@ def main():
                 "wash_and_iron",
                 5,
                 selected_slot,
+                pickup_date,
             )
 
             print("\nBooking proposal")
@@ -187,6 +202,7 @@ def main():
             print(f"Turnaround: {proposal['quote']['turnaround_days']} days")
             print(f"Pickup: {proposal['pickup']['display_name']}")
             print(f"Pickup code: {proposal['pickup']['slot_code']}")
+            print(f"Pickup date: {proposal['pickup']['pickup_date']}")
             print(f"Status: {proposal['status']}")
             while True:
                 approval = input(
@@ -200,7 +216,7 @@ def main():
                     print("\nBooking confirmed!")
                     print(f"Booking ID: {booking['booking_id']}")
                     print(f"Status: {booking['status']}")
-                    updated_slot = check_pickup_slot(selected_slot)
+                    updated_slot = check_pickup_slot(selected_slot, pickup_date)
                     print(
                         "Remaining pickup capacity: "
                         f"{updated_slot['remaining_capacity']}"

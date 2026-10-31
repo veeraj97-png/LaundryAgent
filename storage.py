@@ -4,15 +4,18 @@ from copy import deepcopy
 from datetime import datetime, timezone
 from hashlib import sha256
 from pathlib import Path
+from scheduling import business_today, validate_pickup_date
 
 
 DATABASE_PATH = Path(__file__).parent / "laundry.db"
+DAILY_CAPACITY = {"morning": 2, "afternoon": 0, "evening": 3}
 
 
 def initialize_database():
     connection = sqlite3.connect(DATABASE_PATH)
 
     try:
+        connection.execute("BEGIN IMMEDIATE")
         # 1. Create the orders table.
         connection.execute("""
             CREATE TABLE IF NOT EXISTS orders (
@@ -32,6 +35,18 @@ def initialize_database():
                 display_name TEXT NOT NULL,
                 remaining_capacity INTEGER NOT NULL
                     CHECK (remaining_capacity >= 0)
+            )
+        """)
+
+        # Additive migration: old orders keep NULL; never invent historical dates.
+        if "pickup_date" not in {row[1] for row in connection.execute("PRAGMA table_info(orders)")}:
+            connection.execute("ALTER TABLE orders ADD COLUMN pickup_date TEXT")
+        connection.execute("""
+            CREATE TABLE IF NOT EXISTS dated_pickup_slots (
+                pickup_date TEXT NOT NULL,
+                slot_code TEXT NOT NULL REFERENCES pickup_slots(slot_code),
+                remaining_capacity INTEGER NOT NULL CHECK (remaining_capacity >= 0),
+                PRIMARY KEY (pickup_date, slot_code)
             )
         """)
 
@@ -90,7 +105,10 @@ def initialize_database():
     finally:
         connection.close()
 
-def read_pickup_slots():
+def read_pickup_slots(pickup_date=None):
+    """A dated read never writes. None exposes legacy rows for old local callers."""
+    if pickup_date is not None:
+        pickup_date = validate_pickup_date(pickup_date)
     connection = sqlite3.connect(DATABASE_PATH)
     connection.row_factory = sqlite3.Row
 
@@ -101,7 +119,15 @@ def read_pickup_slots():
             ORDER BY slot_code
         """).fetchall()
 
-        return [dict(row) for row in rows]
+        slots = [dict(row) for row in rows]
+        if pickup_date is None:
+            return slots
+        capacities = {row["slot_code"]: row["remaining_capacity"] for row in connection.execute(
+            "SELECT slot_code, remaining_capacity FROM dated_pickup_slots WHERE pickup_date = ?", (pickup_date,),
+        )}
+        return [{**slot, "pickup_date": pickup_date,
+                 "remaining_capacity": capacities.get(slot["slot_code"], DAILY_CAPACITY.get(slot["slot_code"], 0))}
+                for slot in slots]
 
     finally:
         connection.close()
@@ -121,6 +147,9 @@ def _canonical_booking_details(booking):
             for key in ("slot_code", "display_name")
         },
     }
+    # Preserve the old canonical representation for completed legacy retries.
+    if "pickup_date" in booking["pickup"]:
+        details["pickup"]["pickup_date"] = validate_pickup_date(booking["pickup"]["pickup_date"], allow_past=True)
     return json.dumps(details, sort_keys=True, separators=(",", ":"), allow_nan=False)
 
 
@@ -167,6 +196,8 @@ def save_proposal(proposal):
         ).fetchone()
         if completed is not None:
             raise ValueError("A completed legacy request cannot become a new proposal.")
+
+        validate_pickup_date(proposal["pickup"].get("pickup_date"))
 
         connection.execute("""
             INSERT INTO proposals (
@@ -215,6 +246,8 @@ def _transition_proposal(request_id, snapshot_id, new_state):
             raise ValueError("This proposal has been superseded.")
         if row["state"] == "rejected" and new_state == "approved":
             raise ValueError("A rejected proposal needs a new proposal and fresh approval.")
+        if new_state == "approved":
+            validate_pickup_date(json.loads(row["business_details"])["pickup"].get("pickup_date"))
 
         if row["state"] != new_state:
             # Column names come only from these two fixed choices, never user input.
@@ -300,9 +333,19 @@ def save_booking(booking, *, allow_new=True):
         if proposal["state"] != "approved":
             raise ValueError(f"The stored proposal is {proposal['state']}, not approved.")
 
+        pickup_date = validate_pickup_date(booking["pickup"].get("pickup_date"))
+        slot_code = booking["pickup"]["slot_code"]
+        if slot_code not in DAILY_CAPACITY or connection.execute(
+                "SELECT 1 FROM pickup_slots WHERE slot_code = ?", (slot_code,)).fetchone() is None:
+            raise ValueError("The pickup slot is unavailable.")
+        # Materialize just the booked date/window, inside the same transaction.
+        connection.execute("""
+            INSERT INTO dated_pickup_slots (pickup_date, slot_code, remaining_capacity)
+            VALUES (?, ?, ?) ON CONFLICT(pickup_date, slot_code) DO NOTHING
+        """, (pickup_date, slot_code, DAILY_CAPACITY[slot_code]))
         slot = connection.execute("""
-            SELECT remaining_capacity FROM pickup_slots WHERE slot_code = ?
-        """, (booking["pickup"]["slot_code"],)).fetchone()
+            SELECT remaining_capacity FROM dated_pickup_slots WHERE pickup_date = ? AND slot_code = ?
+        """, (pickup_date, slot_code)).fetchone()
         if slot is None or slot["remaining_capacity"] <= 0:
             raise ValueError("The pickup slot is unavailable.")
 
@@ -311,10 +354,10 @@ def save_booking(booking, *, allow_new=True):
         saved_booking["pickup"]["available"] = True
 
         cursor = connection.execute("""
-            UPDATE pickup_slots
+            UPDATE dated_pickup_slots
             SET remaining_capacity = remaining_capacity - 1
-            WHERE slot_code = ? AND remaining_capacity > 0
-        """, (booking["pickup"]["slot_code"],))
+            WHERE pickup_date = ? AND slot_code = ? AND remaining_capacity > 0
+        """, (pickup_date, slot_code))
 
         if cursor.rowcount != 1:
             raise ValueError("The pickup slot is unavailable.")
@@ -322,9 +365,9 @@ def save_booking(booking, *, allow_new=True):
         connection.execute("""
             INSERT INTO orders (
                 booking_id, service_code, quantity,
-                total_price, slot_code, status
+                total_price, slot_code, status, pickup_date
             )
-            VALUES (?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
         """, (
             booking["booking_id"],
             booking["quote"]["service_code"],
@@ -332,6 +375,7 @@ def save_booking(booking, *, allow_new=True):
             booking["quote"]["total_price"],
             booking["pickup"]["slot_code"],
             "confirmed",
+            pickup_date,
         ))
 
         saved_booking["status"] = "confirmed"
@@ -368,7 +412,7 @@ def get_booking(booking_id):
         connection.row_factory = sqlite3.Row
         row = connection.execute("""
             SELECT booking_id, service_code, quantity,
-                   total_price, slot_code, status
+                   total_price, slot_code, status, pickup_date
             FROM orders
             WHERE booking_id = ?
         """, (booking_id,)).fetchone()
@@ -383,9 +427,9 @@ if __name__ == "__main__":
     initialize_database()
     print(f"Database ready: {DATABASE_PATH}")
 
-    for slot in read_pickup_slots():
+    for slot in read_pickup_slots(business_today().isoformat()):
         print(
-            f"{slot['slot_code']}: "
+            f"{slot['pickup_date']} {slot['slot_code']}: "
             f"{slot['display_name']} — "
             f"{slot['remaining_capacity']} pickups remaining"
         )

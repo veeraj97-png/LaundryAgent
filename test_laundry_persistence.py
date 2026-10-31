@@ -17,6 +17,7 @@ import chat
 import laundry_agent as agent
 from nebius_check import Config
 import storage
+from test_date_helpers import TEST_DATE, seed_date
 from test_laundry_agent import FakeModel, call, reply, database_rows, FAKE_KEY
 
 
@@ -34,8 +35,9 @@ class PersistentConversationTests(unittest.TestCase):
         self.database_patch.start()
         self.addCleanup(self.database_patch.stop)
         storage.initialize_database()
+        seed_date(self.business)
         self.before = database_rows(self.business)
-        for name in ("shop.py", "storage.py", "nebius_check.py", "laundry_agent.py", "chat.py", "test_laundry_agent.py"):
+        for name in ("scheduling.py", "test_date_helpers.py", "shop.py", "storage.py", "nebius_check.py", "laundry_agent.py", "chat.py", "test_laundry_agent.py"):
             shutil.copy2(Path(__file__).parent / name, self.project / name)
         self.events = []
 
@@ -103,7 +105,7 @@ with agent.open_agent(model,checkpoint_path=Path(sys.argv[2])) as graph:
             old = agent.run_turn(graph, "fresh-availability", "Check evening pickup")
         connection = sqlite3.connect(self.business)
         try:
-            connection.execute("UPDATE pickup_slots SET remaining_capacity=0 WHERE slot_code='evening'")
+            connection.execute("UPDATE dated_pickup_slots SET remaining_capacity=0 WHERE slot_code='evening'")
             connection.commit()
         finally:
             connection.close()
